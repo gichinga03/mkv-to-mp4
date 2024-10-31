@@ -2,8 +2,9 @@ import os
 import ffmpeg
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
-import threading
 import shutil
+from concurrent.futures import ThreadPoolExecutor, as_completed
+import threading
 
 class FolderConverter:
     def __init__(self, root):
@@ -24,42 +25,55 @@ class FolderConverter:
         self.browse_button = tk.Button(root, text="Browse Folder", command=self.browse_folder)
         self.browse_button.pack()
 
+        self.total_files = 0
+        self.converted_files = 0
+        self.executor = ThreadPoolExecutor(max_workers=5)  # Limits threads to avoid overload
+
     def browse_folder(self):
         folder_path = filedialog.askdirectory()
         if folder_path:
             output_folder = filedialog.askdirectory(title="Select Output Folder")
             if output_folder:
-                threading.Thread(target=self.convert_folder, args=(folder_path, output_folder)).start()
+                mkv_files = [f for f in os.listdir(folder_path) if f.endswith('.mkv')]
+                self.total_files = len(mkv_files)
+                if not mkv_files:
+                    messagebox.showinfo("No Files", "No MKV files found in the selected folder.")
+                    return
 
-    def convert_folder(self, input_folder, output_folder):
+                # Submit each conversion as a separate task
+                self.converted_files = 0  # Reset progress counter
+                for mkv_file in mkv_files:
+                    input_file = os.path.join(folder_path, mkv_file)
+                    output_file = os.path.join(output_folder, os.path.splitext(mkv_file)[0] + '.mp4')
+                    self.executor.submit(self.convert_file, input_file, output_file)
+
+                # Schedule progress updates
+                self.update_progress()
+
+    def update_progress(self):
+        """Update the progress bar and label in the GUI"""
+        if self.converted_files < self.total_files:
+            self.progress.set((self.converted_files / self.total_files) * 100)
+            self.progress_label.config(text=f"Converted {self.converted_files}/{self.total_files} files")
+            self.root.after(500, self.update_progress)  # Check every 500ms
+        else:
+            messagebox.showinfo("Success", "All files converted successfully!")
+
+    def convert_file(self, input_file, output_file):
+        """Converts a single file and updates converted file count"""
         if not shutil.which("ffmpeg"):
             messagebox.showerror("Error", "FFmpeg is not installed or not found in PATH.")
             return
 
-        self.progress.set(0)
-        self.progress_label.config(text="Conversion started...")
-        mkv_files = [f for f in os.listdir(input_folder) if f.endswith('.mkv')]
-        total_files = len(mkv_files)
-
-        if total_files == 0:
-            messagebox.showinfo("No Files", "No MKV files found in the selected folder.")
-            return
-
-        for index, mkv_file in enumerate(mkv_files):
-            input_file = os.path.join(input_folder, mkv_file)
-            output_file = os.path.join(output_folder, os.path.splitext(mkv_file)[0] + '.mp4')
-
-            try:
-                ffmpeg.input(input_file).output(output_file).run()
-                self.progress.set((index + 1) / total_files * 100)
-                self.progress_label.config(text=f"Converting {index + 1}/{total_files}: {mkv_file}")
-            except ffmpeg.Error as e:
-                self.progress_label.config(text=f"Error occurred: {e}")
-                messagebox.showerror("Error", f"Error occurred: {e}")
-                return
-
-        self.progress_label.config(text="Conversion completed successfully!")
-        messagebox.showinfo("Success", "All files converted successfully!")
+        print(f"Starting conversion for {input_file}")  # Debug log
+        try:
+            # GPU-accelerated conversion
+            ffmpeg.input(input_file).output(output_file, vcodec='h264_nvenc').run()
+            print(f"Completed conversion for {input_file}")  # Debug log
+            self.converted_files += 1
+        except ffmpeg.Error as e:
+            print(f"Error converting {input_file}: {e}")  # Debug log for errors
+            self.progress_label.config(text=f"Error converting {input_file}")
 
 if __name__ == "__main__":
     root = tk.Tk()
